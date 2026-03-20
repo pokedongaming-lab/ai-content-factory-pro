@@ -1,18 +1,51 @@
 import axios from 'axios'
 import { v4 as uuidv4 } from 'uuid'
 
-// Fal.ai API configuration
-const FAL_API_KEY = process.env.FAL_API_KEY || '2669f648-8d80-4f54-906a-451c27c7b0dd:9a8bf7eafb0568f908413fcd4760af8b'
-const FAL_API_URL = 'https://queue.fal.run/fal-ai/pika-1.0-v2'
+// Try different Fal.ai endpoints
+const FAL_API_KEY = process.env.FAL_API_KEY || '9a8bf7eafb0568f908413fcd4760af8b'
+
+// List of possible video generation endpoints
+const VIDEO_ENDPOINTS = [
+  { name: 'kling', url: 'https://queue.fal.run/fal-ai/kling-v1-6-standard/videoGeneration' },
+  { name: 'pika', url: 'https://queue.fal.run/fal-ai/pika-1.0-v2' },
+  { name: 'luma', url: 'https://queue.fal.run/fal-ai/luma-photon/videoGeneration' },
+  { name: 'text-to-video', url: 'https://queue.fal.run/fal-ai/text-to-video' },
+]
 
 // In-memory job storage
 const aiVideoJobs = new Map()
 
 /**
- * Generate AI video from image using Fal.ai (Pika)
- * @param {string} imageUrl - URL or base64 of the image
- * @param {string} prompt - Optional prompt for video generation
- * @returns {Promise<Object>} - Job result
+ * Get headers for Fal.ai API
+ */
+function getHeaders() {
+  return {
+    'Authorization': `Key ${FAL_API_KEY}`,
+    'Content-Type': 'application/json'
+  }
+}
+
+/**
+ * Test which endpoint works
+ */
+async function testEndpoint(endpoint) {
+  try {
+    console.log(`Testing endpoint: ${endpoint.name}`)
+    // Just test with a simple request
+    const response = await axios.get('https://queue.fal.run/requests', {
+      headers: getHeaders(),
+      timeout: 5000
+    })
+    console.log(`${endpoint.name}: connected`)
+    return true
+  } catch (error) {
+    console.log(`${endpoint.name}: ${error.response?.status || error.message}`)
+    return false
+  }
+}
+
+/**
+ * Generate AI video from image using Fal.ai
  */
 export async function generateAIVideo(imageUrl, prompt = '') {
   const jobId = `ai_${uuidv4()}`
@@ -22,55 +55,59 @@ export async function generateAIVideo(imageUrl, prompt = '') {
     status: 'processing',
     progress: 0,
     createdAt: new Date().toISOString(),
-    platform: 'pika'
+    platform: 'fal-ai'
   }
   
   aiVideoJobs.set(jobId, job)
   
-  try {
-    // Submit the request to Fal.ai
-    const response = await axios.post(
-      FAL_API_URL,
-      {
-        image_url: imageUrl,
-        prompt: prompt || 'Generate a smooth, cinematic video from this image'
-      },
-      {
-        headers: {
-          'Authorization': `Key ${FAL_API_KEY}`,
-          'Content-Type': 'application/json'
+  // Try different endpoints
+  for (const endpoint of VIDEO_ENDPOINTS) {
+    try {
+      console.log(`Trying ${endpoint.name} endpoint...`)
+      
+      const response = await axios.post(
+        endpoint.url,
+        {
+          prompt: prompt || 'Generate a smooth, cinematic video from this image, gentle movement',
+          image_url: imageUrl
+        },
+        {
+          headers: getHeaders(),
+          timeout: 30000
         }
-      }
-    )
-    
-    const requestId = response.data.request_id
-    
-    // Poll for results
-    await pollForResult(jobId, requestId)
-    
-    return job
-  } catch (error) {
-    console.error('Fal.ai API error:', error.response?.data || error.message)
-    job.status = 'failed'
-    job.error = error.response?.data?.error || error.message
-    throw error
+      )
+      
+      const requestId = response.data.request_id
+      console.log(`${endpoint.name} request ID:`, requestId)
+      
+      // Poll for results
+      await pollForResult(jobId, requestId, endpoint.name)
+      return job
+      
+    } catch (error) {
+      console.error(`${endpoint.name} error:`, error.response?.data?.detail || error.message)
+      continue // Try next endpoint
+    }
   }
+  
+  // All endpoints failed
+  job.status = 'failed'
+  job.error = 'All video generation endpoints failed. Please check your API key.'
+  throw new Error(job.error)
 }
 
 /**
  * Poll for video generation result
  */
-async function pollForResult(jobId, requestId) {
+async function pollForResult(jobId, requestId, platformName) {
   const job = aiVideoJobs.get(jobId)
   
   const poll = async () => {
     try {
       const response = await axios.get(
-        `https://queue.fal.run/fal-ai/pika-1.0-v2/requests/${requestId}`,
+        `https://queue.fal.run/fal-ai/${platformName}/requests/${requestId}`,
         {
-          headers: {
-            'Authorization': `Key ${FAL_API_KEY}`
-          }
+          headers: getHeaders()
         }
       )
       
@@ -86,9 +123,8 @@ async function pollForResult(jobId, requestId) {
         job.status = 'failed'
         job.error = response.data.error || 'Generation failed'
       } else {
-        // Still processing, continue polling
         job.progress = Math.min(job.progress + 10, 90)
-        setTimeout(poll, 3000) // Poll every 3 seconds
+        setTimeout(poll, 5000)
       }
     } catch (error) {
       console.error('Polling error:', error.message)
@@ -97,8 +133,7 @@ async function pollForResult(jobId, requestId) {
     }
   }
   
-  // Start polling
-  setTimeout(poll, 3000)
+  setTimeout(poll, 5000)
 }
 
 /**
