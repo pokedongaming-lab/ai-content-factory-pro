@@ -7,6 +7,7 @@ import videoRoutes from './routes/video.js'
 import publishRoutes from './routes/publish.js'
 import authRoutes from './routes/auth.js'
 import userRoutes from './routes/user.js'
+import aiVideoRoutes from './routes/aivideo.js'
 
 dotenv.config()
 
@@ -26,6 +27,7 @@ app.use('/api/video', videoRoutes)
 app.use('/api/publish', publishRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/user', userRoutes)
+app.use('/api/ai-video', aiVideoRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
