@@ -1,12 +1,11 @@
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-import ffmpeg from 'fluent-ffmpeg'
+import { execSync, spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 
-// Set FFmpeg path
-ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+const ffmpegPath = ffmpegInstaller.path
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -21,7 +20,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 const videoJobs = new Map()
 
 /**
- * Create a video from frames with simple concatenation
+ * Create a video from frames - using direct exec
  */
 export async function createVideoJob({ frames, audio, settings }) {
   const jobId = `video_${uuidv4()}`
@@ -59,9 +58,9 @@ export async function createVideoJob({ frames, audio, settings }) {
 }
 
 /**
- * Process video with FFmpeg - Simple Loop Method
+ * Process video using direct exec - much more reliable
  */
-async function processVideo(jobId, jobDir, { frames, audio, settings }) {
+async function processVideo(jobId, jobDir, { frames, settings }) {
   const { quality = '1080p', duration = 4 } = settings
   
   // Resolution mapping
@@ -94,52 +93,60 @@ async function processVideo(jobId, jobDir, { frames, audio, settings }) {
   
   job.progress = 30
   
-  // Build simple FFmpeg command - loop each image for duration
+  // Get list of frame files
+  const frameFiles = fs.readdirSync(jobDir)
+    .filter(f => f.startsWith('frame_') && f.endsWith('.jpg'))
+    .sort()
+  
+  if (frameFiles.length === 0) {
+    throw new Error('No valid frames found')
+  }
+  
+  // Create a simple slideshow video - loop each image for duration seconds
+  const inputPattern = path.join(jobDir, 'frame_%d.jpg')
+  const totalDuration = duration * frameFiles.length
+  
+  job.progress = 50
+  
+  // Use direct exec for more reliable execution
+  const cmd = [
+    `"${ffmpegPath}"`,
+    '-framerate 1/' + duration,
+    `-i "${inputPattern}"`,
+    `-vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1"`,
+    '-c:v libx264',
+    '-pix_fmt yuv420p',
+    '-preset ultrafast',
+    '-crf 28',
+    `-t ${totalDuration}`,
+    `-y`,
+    `"${outputPath}"`
+  ].join(' ')
+  
+  console.log('Running FFmpeg command:', cmd)
+  
   return new Promise((resolve, reject) => {
-    // Get list of frame files
-    const frameFiles = fs.readdirSync(jobDir)
-      .filter(f => f.startsWith('frame_') && f.endsWith('.jpg'))
-      .sort()
-    
-    if (frameFiles.length === 0) {
-      reject(new Error('No valid frames found'))
-      return
-    }
-    
-    // Method: Use -loop 1 + -t for each image, then concat
-    const firstFrame = path.join(jobDir, frameFiles[0])
-    
-    ffmpeg()
-      .input(firstFrame)
-      .inputOptions([
-        `-loop 1`,
-        `-t ${duration * frameFiles.length}`
-      ])
-      .size(`${width}x${height}`)
-      .videoCodec('libx264')
-      .videoBitrate('4000k')
-      .outputOptions([
-        '-pix_fmt yuv420p',
-        '-preset ultrafast',
-        '-crf 28',
-        '-movflags +faststart'
-      ])
-      .output(outputPath)
-      .on('progress', (progress) => {
-        job = videoJobs.get(jobId)
-        job.progress = Math.min(90, 30 + Math.round((progress.percent || 0) * 0.6))
+    try {
+      const output = execSync(cmd, {
+        encoding: 'utf8',
+        timeout: 120000, // 2 minute timeout
+        cwd: jobDir
       })
-      .on('end', () => {
-        job = videoJobs.get(jobId)
-        job.progress = 100
-        console.log(`Video created: ${outputPath}`)
+      
+      console.log('FFmpeg output:', output)
+      
+      job = videoJobs.get(jobId)
+      job.progress = 100
+      
+      if (fs.existsSync(outputPath)) {
         resolve(outputPath)
-      })
-      .on('error', (err) => {
-        console.error('FFmpeg error:', err.message)
-        reject(err)
-      })
-      .run()
+      } else {
+        reject(new Error('Output video not created'))
+      }
+    } catch (error) {
+      console.error('FFmpeg error:', error.message)
+      reject(error)
+    }
   })
 }
 
