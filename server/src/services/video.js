@@ -1,5 +1,5 @@
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-import { execSync, spawn } from 'child_process'
+import { execSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
@@ -20,7 +20,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 const videoJobs = new Map()
 
 /**
- * Create a video from frames - using direct exec
+ * Create a video from frames
  */
 export async function createVideoJob({ frames, audio, settings }) {
   const jobId = `video_${uuidv4()}`
@@ -58,7 +58,46 @@ export async function createVideoJob({ frames, audio, settings }) {
 }
 
 /**
- * Process video using direct exec - much more reliable
+ * Convert base64 image to proper JPEG using FFmpeg
+ */
+function convertToProperJPEG(jobDir, inputData, inputName) {
+  const inputPath = path.join(jobDir, inputName)
+  const outputPath = path.join(jobDir, inputName.replace('.jpg', '_converted.jpg'))
+  
+  // Save the raw base64 data first
+  try {
+    const base64Data = inputData.includes(',') ? inputData.split(',')[1] : inputData
+    const buffer = Buffer.from(base64Data, 'base64')
+    fs.writeFileSync(inputPath, buffer)
+  } catch (e) {
+    console.error('Error saving base64 to file:', e)
+    throw new Error('Failed to decode image data')
+  }
+  
+  // Use FFmpeg to convert/validate the image
+  const cmd = [
+    `"${ffmpegPath}"`,
+    `-i "${inputPath}"`,
+    `-y`,
+    `-c:v mjpeg`,
+    `-q:v 2`,
+    `"${outputPath}"`
+  ].join(' ')
+  
+  try {
+    execSync(cmd, { encoding: 'utf8', timeout: 30000 })
+    // Remove original, use converted
+    fs.unlinkSync(inputPath)
+    return outputPath
+  } catch (e) {
+    console.error('FFmpeg convert error:', e.message)
+    // If conversion fails, just try to use the original
+    return inputPath
+  }
+}
+
+/**
+ * Process video using direct exec
  */
 async function processVideo(jobId, jobDir, { frames, settings }) {
   const { quality = '1080p', duration = 4 } = settings
@@ -75,50 +114,59 @@ async function processVideo(jobId, jobDir, { frames, settings }) {
   let job = videoJobs.get(jobId)
   job.progress = 10
   
-  // Save all frame images
+  // Save and convert all frame images to proper JPEG
+  const convertedFrames = []
+  
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i]
-    const framePath = path.join(jobDir, `frame_${i}.jpg`)
     
-    try {
-      if (frame.startImage) {
-        const startData = frame.startImage.includes(',') ? frame.startImage.split(',')[1] : frame.startImage
-        const buffer = Buffer.from(startData, 'base64')
-        fs.writeFileSync(framePath, buffer)
+    if (frame.startImage) {
+      try {
+        const convertedPath = convertToProperJPEG(jobDir, frame.startImage, `frame_${i}.jpg`)
+        convertedFrames.push(convertedPath)
+        console.log(`Frame ${i} converted successfully`)
+      } catch (e) {
+        console.error(`Error converting frame ${i}:`, e)
       }
-    } catch (e) {
-      console.error(`Error saving frame ${i}:`, e)
     }
   }
   
-  job.progress = 30
+  job.progress = 40
   
-  // Get list of frame files
-  const frameFiles = fs.readdirSync(jobDir)
-    .filter(f => f.startsWith('frame_') && f.endsWith('.jpg'))
-    .sort()
-  
-  if (frameFiles.length === 0) {
-    throw new Error('No valid frames found')
+  if (convertedFrames.length === 0) {
+    throw new Error('No valid frames found after conversion')
   }
   
-  // Create a simple slideshow video - loop each image for duration seconds
-  const inputPattern = path.join(jobDir, 'frame_%d.jpg')
-  const totalDuration = duration * frameFiles.length
+  // Create a simple concat demuxer file
+  const concatFilePath = path.join(jobDir, 'input.txt')
+  let concatContent = ''
   
-  job.progress = 50
+  for (let i = 0; i < convertedFrames.length; i++) {
+    const fp = convertedFrames[i].replace(/\\/g, '/')
+    concatContent += `file '${fp}'\nduration ${duration}\n`
+  }
   
-  // Use direct exec for more reliable execution
+  // Add last frame again to fill the duration
+  if (convertedFrames.length > 0) {
+    const lastFrame = convertedFrames[convertedFrames.length - 1].replace(/\\/g, '/')
+    concatContent += `file '${lastFrame}'\n`
+  }
+  
+  fs.writeFileSync(concatFilePath, concatContent)
+  
+  job.progress = 60
+  
+  // Use concat demuxer to create video
   const cmd = [
     `"${ffmpegPath}"`,
-    '-framerate 1/' + duration,
-    `-i "${inputPattern}"`,
+    `-f concat`,
+    `-safe 0`,
+    `-i "${concatFilePath}"`,
     `-vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1"`,
-    '-c:v libx264',
-    '-pix_fmt yuv420p',
-    '-preset ultrafast',
-    '-crf 28',
-    `-t ${totalDuration}`,
+    `-c:v libx264`,
+    `-pix_fmt yuv420p`,
+    `-preset ultrafast`,
+    `-crf 28`,
     `-y`,
     `"${outputPath}"`
   ].join(' ')
@@ -129,7 +177,7 @@ async function processVideo(jobId, jobDir, { frames, settings }) {
     try {
       const output = execSync(cmd, {
         encoding: 'utf8',
-        timeout: 120000, // 2 minute timeout
+        timeout: 180000,
         cwd: jobDir
       })
       
