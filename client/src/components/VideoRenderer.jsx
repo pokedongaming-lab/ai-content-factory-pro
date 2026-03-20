@@ -71,14 +71,27 @@ export default function VideoRenderer() {
 
   const handleFrameUpload = (e) => {
     const files = Array.from(e.target.files)
-    const newFrames = files.map((file, index) => ({
-      id: Date.now() + index,
-      file,
-      preview: URL.createObjectURL(file),
-      startImage: null,
-      endImage: null
-    }))
-    setFrames(prev => [...prev, ...newFrames])
+    
+    // Process each file and convert to base64
+    const promises = files.map((file, index) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload = (e) => {
+          resolve({
+            id: Date.now() + index,
+            file,
+            preview: e.target.result, // Use base64 directly
+            startImage: e.target.result, // Use same image for both start and end
+            endImage: e.target.result
+          })
+        }
+        reader.readAsDataURL(file)
+      })
+    })
+    
+    Promise.all(promises).then(newFrames => {
+      setFrames(prev => [...prev, ...newFrames])
+    })
   }
 
   const handleStartImage = (frameId, imageData) => {

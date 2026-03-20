@@ -81,20 +81,37 @@ async function processVideo(jobId, jobDir, { frames, audio, settings }) {
   const framePaths = []
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i]
+    
+    // Validate frame has at least one image
+    if (!frame.startImage && !frame.endImage) {
+      console.warn(`Frame ${i} has no images, skipping...`)
+      continue
+    }
+    
     const startPath = path.join(jobDir, `frame_${i}_start.jpg`)
     const endPath = path.join(jobDir, `frame_${i}_end.jpg`)
     
-    // Decode base64 and save
-    if (frame.startImage) {
-      const startBuffer = Buffer.from(frame.startImage.split(',')[1], 'base64')
-      fs.writeFileSync(startPath, startBuffer)
-    }
-    if (frame.endImage) {
-      const endBuffer = Buffer.from(frame.endImage.split(',')[1], 'base64')
-      fs.writeFileSync(endPath, endBuffer)
+    // Decode base64 and save - handle both with and without data URL prefix
+    try {
+      if (frame.startImage) {
+        const startData = frame.startImage.includes(',') ? frame.startImage.split(',')[1] : frame.startImage
+        const startBuffer = Buffer.from(startData, 'base64')
+        fs.writeFileSync(startPath, startBuffer)
+      }
+      if (frame.endImage) {
+        const endData = frame.endImage.includes(',') ? frame.endImage.split(',')[1] : frame.endImage
+        const endBuffer = Buffer.from(endData, 'base64')
+        fs.writeFileSync(endPath, endBuffer)
+      }
+    } catch (imgError) {
+      console.error(`Error processing frame ${i}:`, imgError)
     }
     
     framePaths.push({ start: startPath, end: endPath, duration: frame.duration || 4 })
+  }
+  
+  if (framePaths.length === 0) {
+    throw new Error('No valid frames to process')
   }
   
   // Update progress
@@ -107,10 +124,17 @@ async function processVideo(jobId, jobDir, { frames, audio, settings }) {
   
   for (let i = 0; i < framePaths.length; i++) {
     const fp = framePaths[i]
-    concatContent += `file '${fp.start}'\nduration ${fp.duration}\n`
-    if (i === framePaths.length - 1) {
-      concatContent += `file '${fp.end}'\n`
+    // Only add if file exists
+    if (fs.existsSync(fp.start)) {
+      concatContent += `file '${fp.start.replace(/\\/g, '/')}'\nduration ${fp.duration}\n`
     }
+    if (i === framePaths.length - 1 && fs.existsSync(fp.end)) {
+      concatContent += `file '${fp.end.replace(/\\/g, '/')}'\n`
+    }
+  }
+  
+  if (!concatContent) {
+    throw new Error('No valid frame files to process')
   }
   
   fs.writeFileSync(concatFilePath, concatContent)
@@ -133,27 +157,37 @@ async function processVideo(jobId, jobDir, { frames, audio, settings }) {
     
     // Add background music if provided
     if (audio && audio.backgroundMusic) {
-      const musicPath = path.join(jobDir, 'music.mp3')
-      const musicBuffer = Buffer.from(audio.backgroundMusic.split(',')[1], 'base64')
-      fs.writeFileSync(musicPath, musicBuffer)
-      
-      command = command
-        .input(musicPath)
-        .complexFilter([
-          '[1:a]volume=0.3[music]',
-          '[0:a][music]amix=inputs=2:duration=first[aout]'
-        ])
-        .outputOptions(['-map 0:v', '-map [aout]'])
+      try {
+        const musicData = audio.backgroundMusic.includes(',') ? audio.backgroundMusic.split(',')[1] : audio.backgroundMusic
+        const musicPath = path.join(jobDir, 'music.mp3')
+        const musicBuffer = Buffer.from(musicData, 'base64')
+        fs.writeFileSync(musicPath, musicBuffer)
+        
+        command = command
+          .input(musicPath)
+          .complexFilter([
+            '[1:a]volume=0.3[music]',
+            '[0:a][music]amix=inputs=2:duration=first[aout]'
+          ])
+          .outputOptions(['-map 0:v', '-map [aout]'])
+      } catch (e) {
+        console.warn('Failed to add background music:', e)
+      }
     }
     
     // Add voice over if provided
     if (audio && audio.voiceOver) {
-      const voicePath = path.join(jobDir, 'voice.mp3')
-      const voiceBuffer = Buffer.from(audio.voiceOver.split(',')[1], 'base64')
-      fs.writeFileSync(voicePath, voiceBuffer)
-      
-      command = command
-        .input(voicePath)
+      try {
+        const voiceData = audio.voiceOver.includes(',') ? audio.voiceOver.split(',')[1] : audio.voiceOver
+        const voicePath = path.join(jobDir, 'voice.mp3')
+        const voiceBuffer = Buffer.from(voiceData, 'base64')
+        fs.writeFileSync(voicePath, voiceBuffer)
+        
+        command = command
+          .input(voicePath)
+      } catch (e) {
+        console.warn('Failed to add voice over:', e)
+      }
     }
     
     command
