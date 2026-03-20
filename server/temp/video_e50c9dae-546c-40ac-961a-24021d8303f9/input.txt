@@ -1,3 +1,0 @@
-file 'C:\Users\admin\.openclaw\workspace\ai-content-factory-pro\server\temp\video_e50c9dae-546c-40ac-961a-24021d8303f9\frame_0_start.jpg'
-duration 4
-file 'C:\Users\admin\.openclaw\workspace\ai-content-factory-pro\server\temp\video_e50c9dae-546c-40ac-961a-24021d8303f9\frame_0_end.jpg'
